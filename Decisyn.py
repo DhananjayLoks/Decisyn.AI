@@ -1,11 +1,12 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 from io import StringIO, BytesIO
 import os
 import google.generativeai as genai
+import matplotlib.pyplot as plt # For Dendrograms
 
 # --- ML Libraries ---
 from sklearn.model_selection import train_test_split
@@ -13,6 +14,7 @@ from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.cluster import KMeans
 from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, confusion_matrix
 from sklearn.preprocessing import LabelEncoder
+import scipy.cluster.hierarchy as shc # For Hierarchical Clustering
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -66,96 +68,190 @@ def add_to_history(df):
     st.session_state.history.append(df.copy())
 
 # ==========================================
-# 🤖 ML STUDIO FUNCTION
+# 🤖 PRO ML STUDIO FUNCTION
 # ==========================================
 def render_ml_studio(df):
-    st.markdown("## 🤖 ML Studio")
-    st.markdown("Build and Train Machine Learning models directly on your data.")
+    st.markdown("## 🤖 Pro ML Studio")
+    st.markdown("Advanced analytics, forecasting, and segmentation.")
 
-    task_type = st.radio("Select Task:", ["Supervised Learning (Prediction)", "Unsupervised Learning (Clustering)"], horizontal=True)
+    # Tabs for different ML Tasks
+    ml_tab1, ml_tab2, ml_tab3 = st.tabs(["🔮 Forecast Future", "🎯 Target Prediction (Supervised)", "🧬 Advanced Clustering"])
 
-    if task_type == "Supervised Learning (Prediction)":
-        st.subheader("Predictive Modeling")
+    # === TAB 1: TIME SERIES FORECASTING ===
+    with ml_tab1:
+        st.subheader("Time-Series Forecasting")
+        st.caption("Predict future values based on historical trends.")
+
+        date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
+        num_cols = df.select_dtypes(include=['number']).columns.tolist()
+
+        if not date_cols:
+            st.error("⚠️ No Date column found! Please convert a column to 'datetime' in the Cleaner tab first.")
+        else:
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                date_col = st.selectbox("Select Date Column:", date_cols)
+            with c2:
+                target_col = st.selectbox("Select Value to Predict (e.g., Sales):", num_cols)
+            with c3:
+                horizon = st.slider("Forecast Horizon (Years):", 1, 10, 5)
+
+            if st.button("🚀 Generate Forecast"):
+                # 1. Prepare Data (Group by date to handle duplicates)
+                df_grouped = df.groupby(date_col)[target_col].sum().reset_index()
+                df_grouped = df_grouped.sort_values(date_col)
+                
+                # 2. Create Time Features (Ordinal dates for Regression)
+                df_grouped['Time_Index'] = np.arange(len(df_grouped))
+                
+                # 3. Train Linear Trend Model
+                X = df_grouped[['Time_Index']]
+                y = df_grouped[target_col]
+                model = LinearRegression()
+                model.fit(X, y)
+                
+                # 4. Create Future DataFrame
+                last_date = df_grouped[date_col].max()
+                # Assuming monthly data roughly; extending index
+                future_steps = horizon * 12 # 12 months per year estimate
+                future_indices = np.arange(len(df_grouped), len(df_grouped) + future_steps).reshape(-1, 1)
+                future_preds = model.predict(future_indices)
+                
+                # Create Future Dates (Approximate)
+                future_dates = pd.date_range(start=last_date, periods=future_steps + 1, freq='M')[1:]
+                
+                df_future = pd.DataFrame({
+                    date_col: future_dates,
+                    target_col: future_preds,
+                    'Type': 'Forecast'
+                })
+                
+                df_grouped['Type'] = 'History'
+                
+                # Combine
+                df_final = pd.concat([df_grouped[[date_col, target_col, 'Type']], df_future])
+                
+                # 5. Visualization
+                fig = px.line(df_final, x=date_col, y=target_col, color='Type', 
+                              title=f"{target_col} Forecast: Next {horizon} Years",
+                              color_discrete_map={"History": "cyan", "Forecast": "orange"},
+                              template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True)
+                
+                st.success(f"✅ Forecast generated for {horizon} years into the future!")
+
+    # === TAB 2: SUPERVISED LEARNING (REGRESSION/CLASSIFICATION) ===
+    with ml_tab2:
+        st.subheader("Predictive Modeling & What-If Analysis")
+        
         model_type = st.selectbox("Choose Algorithm:", ["Linear Regression (Predict Numbers)", "Logistic Regression (Predict Categories)"])
         
-        col1, col2 = st.columns(2)
-        with col1:
-            target_col = st.selectbox("Select Target Variable (y):", df.columns)
-        with col2:
-            feature_cols = st.multiselect("Select Feature Variables (X):", [c for c in df.columns if c != target_col])
-
-        if st.button("Train Model") and feature_cols and target_col:
-            X = df[feature_cols].dropna()
-            y = df.loc[X.index, target_col]
+        c1, c2 = st.columns(2)
+        with c1: target = st.selectbox("Target Variable (y):", df.columns)
+        with c2: features = st.multiselect("Feature Variables (X):", [c for c in df.columns if c != target])
+        
+        if st.button("Train & Build Calculator") and features:
+            X = df[features].dropna()
+            y = df.loc[X.index, target]
             
+            # Encoding
             X = pd.get_dummies(X, drop_first=True)
+            le = None
             if y.dtype == 'object':
                 le = LabelEncoder()
                 y = le.fit_transform(y)
-            
+                
             X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
             
-            with st.spinner("Training Model..."):
-                try:
-                    if model_type.startswith("Linear"):
-                        model_lr = LinearRegression()
-                        model_lr.fit(X_train, y_train)
-                        y_pred = model_lr.predict(X_test)
-                        
-                        r2 = r2_score(y_test, y_pred)
-                        mse = mean_squared_error(y_test, y_pred)
-                        
-                        st.success("✅ Model Trained Successfully!")
-                        m1, m2 = st.columns(2)
-                        m1.metric("R² Score (Accuracy)", f"{r2:.2%}")
-                        m2.metric("Mean Squared Error", f"{mse:.2f}")
-                        
-                        fig = px.scatter(x=y_test, y=y_pred, labels={'x': 'Actual Values', 'y': 'Predicted Values'}, title="Actual vs Predicted")
-                        fig.add_shape(type="line", line=dict(dash="dash"), x0=y.min(), y0=y.min(), x1=y.max(), y1=y.max())
-                        st.plotly_chart(fig, use_container_width=True)
+            model = None
+            if model_type.startswith("Linear"):
+                model = LinearRegression()
+                model.fit(X_train, y_train)
+                score = r2_score(y_test, model.predict(X_test))
+                st.metric("Model Accuracy (R²)", f"{score:.2%}")
+            else:
+                model = LogisticRegression(max_iter=1000)
+                model.fit(X_train, y_train)
+                score = accuracy_score(y_test, model.predict(X_test))
+                st.metric("Model Accuracy", f"{score:.2%}")
+                
+            st.markdown("---")
+            st.subheader("🧮 What-If Calculator")
+            st.markdown("Change the inputs below to predict the outcome.")
+            
+            # Dynamic Input Generation
+            user_inputs = {}
+            cols = st.columns(len(features))
+            for i, col_name in enumerate(features):
+                with cols[i % len(features)]:
+                    if pd.api.types.is_numeric_dtype(df[col_name]):
+                        val = st.number_input(f"{col_name}", value=float(df[col_name].mean()))
+                    else:
+                        val = st.selectbox(f"{col_name}", df[col_name].unique())
+                    user_inputs[col_name] = val
+            
+            if st.button("Predict Outcome"):
+                # Prepare input data matching training shape
+                input_df = pd.DataFrame([user_inputs])
+                input_df = pd.get_dummies(input_df)
+                # Align columns (missing columns get 0)
+                input_df = input_df.reindex(columns=X.columns, fill_value=0)
+                
+                prediction = model.predict(input_df)[0]
+                
+                if le: # Decode if categorical
+                    prediction = le.inverse_transform([prediction])[0]
+                    
+                st.success(f"### 🔮 Predicted {target}: {prediction}")
 
-                    elif model_type.startswith("Logistic"):
-                        model_log = LogisticRegression(max_iter=1000)
-                        model_log.fit(X_train, y_train)
-                        y_pred = model_log.predict(X_test)
-                        
-                        acc = accuracy_score(y_test, y_pred)
-                        st.success("✅ Model Trained Successfully!")
-                        st.metric("Accuracy", f"{acc:.2%}")
-                        
-                        cm = confusion_matrix(y_test, y_pred)
-                        fig = px.imshow(cm, text_auto=True, title="Confusion Matrix", labels=dict(x="Predicted", y="Actual", color="Count"))
-                        st.plotly_chart(fig, use_container_width=True)
-                        
-                except Exception as e:
-                    st.error(f"Error Training Model: {e}")
-
-    elif task_type == "Unsupervised Learning (Clustering)":
-        st.subheader("K-Means Clustering")
+    # === TAB 3: ADVANCED CLUSTERING ===
+    with ml_tab3:
+        st.subheader("Advanced Segmentation")
+        cluster_method = st.radio("Method:", ["K-Means (Group & Visualize)", "Hierarchical (Dendrogram)"], horizontal=True)
         
-        cluster_cols = st.multiselect("Select Features for Clustering:", df.select_dtypes(include=['number']).columns)
-        k_value = st.slider("Number of Clusters (k):", 2, 10, 3)
+        cluster_cols = st.multiselect("Select Features to Cluster:", df.select_dtypes(include=['number']).columns)
         
-        if st.button("Run Clustering") and cluster_cols:
+        if cluster_cols:
             X = df[cluster_cols].dropna()
             
-            with st.spinner("Clustering Data..."):
-                try:
-                    kmeans = KMeans(n_clusters=k_value, random_state=42, n_init=10)
-                    clusters = kmeans.fit_predict(X)
-                    X['Cluster'] = clusters.astype(str)
+            if cluster_method.startswith("K-Means"):
+                k = st.slider("Number of Clusters (k):", 2, 8, 3)
+                if st.button("Run K-Means"):
+                    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+                    df['Cluster'] = kmeans.fit_predict(X).astype(str)
                     
-                    st.success(f"✅ Data grouped into {k_value} clusters!")
-                    
-                    if len(cluster_cols) >= 2:
-                        fig = px.scatter(X, x=cluster_cols[0], y=cluster_cols[1], color='Cluster', title="Cluster Visualization", template="plotly_dark")
-                        st.plotly_chart(fig, use_container_width=True)
+                    # Advanced 3D or 2D Plot
+                    if len(cluster_cols) >= 3:
+                        fig = px.scatter_3d(df, x=cluster_cols[0], y=cluster_cols[1], z=cluster_cols[2], color='Cluster', title="3D Cluster Visualization", template="plotly_dark")
+                    elif len(cluster_cols) == 2:
+                        fig = px.scatter(df, x=cluster_cols[0], y=cluster_cols[1], color='Cluster', title="2D Cluster Visualization", template="plotly_dark")
+                        # Add Centroids
+                        centroids = kmeans.cluster_centers_
+                        fig.add_trace(go.Scatter(x=centroids[:,0], y=centroids[:,1], mode='markers', marker=dict(color='red', size=12, symbol='x'), name='Centroids'))
                     else:
-                        st.warning("Select at least 2 numerical columns to visualize clusters.")
-                        
-                    st.dataframe(X.head())
-                except Exception as e:
-                    st.error(f"Error in Clustering: {e}")
+                        fig = px.scatter(df, x=df.index, y=cluster_cols[0], color='Cluster', title="1D Cluster Visualization", template="plotly_dark")
+                    
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+            elif cluster_method.startswith("Hierarchical"):
+                st.subheader("🌳 Dendrogram Visualization")
+                st.caption("This chart helps you decide how many clusters exist naturally in your data.")
+                
+                if st.button("Generate Dendrogram"):
+                    with st.spinner("Calculating Linkages... (This may take a moment)"):
+                        # limit rows for performance if huge
+                        if len(X) > 2000:
+                            st.warning("Dataset too large for clean Dendrogram. Sampling first 1000 rows.")
+                            X_sample = X.head(1000)
+                        else:
+                            X_sample = X
+                            
+                        plt.figure(figsize=(10, 7))
+                        plt.title("Customer Dendrogram")
+                        dend = shc.dendrogram(shc.linkage(X_sample, method='ward'))
+                        plt.axhline(y=6, color='r', linestyle='--')
+                        st.pyplot(plt)
+
 
 # ==========================================
 # 🚀 ONE-CLICK DASHBOARD FUNCTION
@@ -383,45 +479,23 @@ def page_data_analyzer():
 
             with c2:
                 st.caption("🧼 Content Cleaning")
-                
-                # --- FIX: IMPROVED MISSING VALUE HANDLING ---
-                with st.expander("💧 Handle Missing Values", expanded=True):
+                with st.expander("💧 Handle Missing Values"):
                     if missing_cells > 0:
                         st.dataframe(df_processed.isnull().sum()[df_processed.isnull().sum() > 0], height=100)
-                        
-                        # Split into different methods to handle text vs numbers correctly
-                        method = st.selectbox("Method:", [
-                            "Drop Rows with Missing Values", 
-                            "Fill with Mean (Numeric Cols Only)", 
-                            "Fill with Mode (Most Frequent - All Cols)", 
-                            "Fill with Zero / 'Unknown'"
-                        ])
-                        
+                        method = st.selectbox("Method:", ["Drop Rows", "Fill Mean (Numeric Only)", "Fill Mode (All)", "Fill Zero/Unknown"])
                         if st.button("Apply Fix"):
                             add_to_history(df_processed)
-                            
-                            if method == "Drop Rows with Missing Values":
-                                st.session_state.df_processed = df_processed.dropna()
-                                
-                            elif method == "Fill with Mean (Numeric Cols Only)":
-                                # Only fill numeric columns to prevent errors
-                                num_cols = df_processed.select_dtypes(include=['number']).columns
-                                st.session_state.df_processed[num_cols] = df_processed[num_cols].fillna(df_processed[num_cols].mean())
-                                
-                            elif method == "Fill with Mode (Most Frequent - All Cols)":
-                                for col in df_processed.columns:
-                                    if df_processed[col].isnull().any():
-                                        st.session_state.df_processed[col] = df_processed[col].fillna(df_processed[col].mode()[0])
-                                        
-                            elif method == "Fill with Zero / 'Unknown'":
-                                num_cols = df_processed.select_dtypes(include=['number']).columns
-                                cat_cols = df_processed.select_dtypes(exclude=['number']).columns
-                                if len(num_cols) > 0:
-                                    st.session_state.df_processed[num_cols] = df_processed[num_cols].fillna(0)
-                                if len(cat_cols) > 0:
-                                    st.session_state.df_processed[cat_cols] = df_processed[cat_cols].fillna("Unknown")
-                                    
-                            st.success("✅ Missing values handled!")
+                            if method.startswith("Drop"): st.session_state.df_processed = df_processed.dropna()
+                            elif method.startswith("Fill Mean"): 
+                                num = df_processed.select_dtypes(include=np.number).columns
+                                st.session_state.df_processed[num] = df_processed[num].fillna(df_processed[num].mean())
+                            elif method.startswith("Fill Mode"): 
+                                for c in df_processed.columns:
+                                    if df_processed[c].isnull().any():
+                                        st.session_state.df_processed[c] = df_processed[c].fillna(df_processed[c].mode()[0])
+                            elif method.startswith("Fill Zero"):
+                                st.session_state.df_processed = df_processed.fillna(0)
+                            st.success("✅ Missing values handled")
                             st.rerun()
                     else:
                         st.success("✨ No missing values found!")
@@ -458,10 +532,8 @@ def page_data_analyzer():
 
             st.markdown("---")
             st.subheader("📝 Live Data Editor")
-            # Use dynamic key to ensure refreshing when history changes
             editor_key = f"editor_{len(st.session_state.history)}"
             edited_df = st.data_editor(df_processed, num_rows="dynamic", use_container_width=True, key=editor_key)
-            
             if not edited_df.equals(df_processed):
                  add_to_history(df_processed)
                  st.session_state.df_processed = edited_df
