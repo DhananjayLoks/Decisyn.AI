@@ -3,9 +3,16 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from io import StringIO
+from io import StringIO, BytesIO
 import os
 import google.generativeai as genai
+
+# --- ML Libraries ---
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.cluster import KMeans
+from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, confusion_matrix
+from sklearn.preprocessing import LabelEncoder
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -31,7 +38,7 @@ except Exception as e:
     st.error(f"Error configuring Gemini AI: {e}")
     GEMINI_CONFIGURED = False
 
-# --- Caching Functions for Performance ---
+# --- Caching Functions ---
 @st.cache_data
 def load_data(uploaded_file):
     if uploaded_file.name.endswith('.csv'):
@@ -46,38 +53,201 @@ def load_data(uploaded_file):
 def convert_df_to_csv(df):
     return df.to_csv(index=False).encode('utf-8')
 
-# --- Helper function to save state for Undo ---
+@st.cache_data
+def convert_df_to_excel(df):
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Sheet1')
+    return output.getvalue()
+
 def add_to_history(df):
+    if 'history' not in st.session_state:
+        st.session_state.history = []
     st.session_state.history.append(df.copy())
+
+# ==========================================
+# 🤖 ML STUDIO FUNCTION
+# ==========================================
+def render_ml_studio(df):
+    st.markdown("## 🤖 ML Studio")
+    st.markdown("Build and Train Machine Learning models directly on your data.")
+
+    task_type = st.radio("Select Task:", ["Supervised Learning (Prediction)", "Unsupervised Learning (Clustering)"], horizontal=True)
+
+    if task_type == "Supervised Learning (Prediction)":
+        st.subheader("Predictive Modeling")
+        model_type = st.selectbox("Choose Algorithm:", ["Linear Regression (Predict Numbers)", "Logistic Regression (Predict Categories)"])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            target_col = st.selectbox("Select Target Variable (y):", df.columns)
+        with col2:
+            feature_cols = st.multiselect("Select Feature Variables (X):", [c for c in df.columns if c != target_col])
+
+        if st.button("Train Model") and feature_cols and target_col:
+            X = df[feature_cols].dropna()
+            y = df.loc[X.index, target_col]
+            
+            X = pd.get_dummies(X, drop_first=True)
+            if y.dtype == 'object':
+                le = LabelEncoder()
+                y = le.fit_transform(y)
+            
+            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+            
+            with st.spinner("Training Model..."):
+                try:
+                    if model_type.startswith("Linear"):
+                        model_lr = LinearRegression()
+                        model_lr.fit(X_train, y_train)
+                        y_pred = model_lr.predict(X_test)
+                        
+                        r2 = r2_score(y_test, y_pred)
+                        mse = mean_squared_error(y_test, y_pred)
+                        
+                        st.success("✅ Model Trained Successfully!")
+                        m1, m2 = st.columns(2)
+                        m1.metric("R² Score (Accuracy)", f"{r2:.2%}")
+                        m2.metric("Mean Squared Error", f"{mse:.2f}")
+                        
+                        fig = px.scatter(x=y_test, y=y_pred, labels={'x': 'Actual Values', 'y': 'Predicted Values'}, title="Actual vs Predicted")
+                        fig.add_shape(type="line", line=dict(dash="dash"), x0=y.min(), y0=y.min(), x1=y.max(), y1=y.max())
+                        st.plotly_chart(fig, use_container_width=True)
+
+                    elif model_type.startswith("Logistic"):
+                        model_log = LogisticRegression(max_iter=1000)
+                        model_log.fit(X_train, y_train)
+                        y_pred = model_log.predict(X_test)
+                        
+                        acc = accuracy_score(y_test, y_pred)
+                        st.success("✅ Model Trained Successfully!")
+                        st.metric("Accuracy", f"{acc:.2%}")
+                        
+                        cm = confusion_matrix(y_test, y_pred)
+                        fig = px.imshow(cm, text_auto=True, title="Confusion Matrix", labels=dict(x="Predicted", y="Actual", color="Count"))
+                        st.plotly_chart(fig, use_container_width=True)
+                        
+                except Exception as e:
+                    st.error(f"Error Training Model: {e}")
+
+    elif task_type == "Unsupervised Learning (Clustering)":
+        st.subheader("K-Means Clustering")
+        
+        cluster_cols = st.multiselect("Select Features for Clustering:", df.select_dtypes(include=['number']).columns)
+        k_value = st.slider("Number of Clusters (k):", 2, 10, 3)
+        
+        if st.button("Run Clustering") and cluster_cols:
+            X = df[cluster_cols].dropna()
+            
+            with st.spinner("Clustering Data..."):
+                try:
+                    kmeans = KMeans(n_clusters=k_value, random_state=42, n_init=10)
+                    clusters = kmeans.fit_predict(X)
+                    X['Cluster'] = clusters.astype(str)
+                    
+                    st.success(f"✅ Data grouped into {k_value} clusters!")
+                    
+                    if len(cluster_cols) >= 2:
+                        fig = px.scatter(X, x=cluster_cols[0], y=cluster_cols[1], color='Cluster', title="Cluster Visualization", template="plotly_dark")
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("Select at least 2 numerical columns to visualize clusters.")
+                        
+                    st.dataframe(X.head())
+                except Exception as e:
+                    st.error(f"Error in Clustering: {e}")
+
+# ==========================================
+# 🚀 ONE-CLICK DASHBOARD FUNCTION
+# ==========================================
+def render_ocd_dashboard(df):
+    st.markdown("## 🚀 One-Click Dashboard")
+    st.markdown("Automatic insights based on your dataset structure.")
+
+    num_cols = df.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
+
+    st.subheader("📊 Key Performance Indicators")
+    default_kpis = num_cols[:3] if len(num_cols) >= 3 else num_cols
+    selected_kpis = st.multiselect("Select Metrics to Track:", num_cols, default=default_kpis)
+
+    if selected_kpis:
+        cols = st.columns(len(selected_kpis) + 1)
+        cols[0].metric("Total Rows", f"{len(df):,}")
+        for i, col_name in enumerate(selected_kpis):
+            total_val = df[col_name].sum()
+            cols[i+1].metric(f"Total {col_name}", f"{total_val:,.2f}")
+    else:
+        st.metric("Total Rows", len(df))
+
+    st.divider()
+
+    st.subheader("📈 Auto-Generated Visualizations")
+    best_cat_col = next((col for col in cat_cols if 2 <= df[col].nunique() <= 20), None)
+    col1, col2 = st.columns(2)
+
+    if best_cat_col and num_cols:
+        with col1:
+            st.markdown(f"**{num_cols[0]} by {best_cat_col}**")
+            fig_bar = px.bar(df, x=best_cat_col, y=num_cols[0], template="plotly_dark")
+            st.plotly_chart(fig_bar, use_container_width=True)
+        with col2:
+            st.markdown(f"**Distribution of {num_cols[0]}**")
+            fig_pie = px.pie(df, names=best_cat_col, values=num_cols[0], template="plotly_dark")
+            st.plotly_chart(fig_pie, use_container_width=True)
+    elif not best_cat_col:
+        st.info("No suitable categorical column found (needs 2-20 unique values) for Bar/Pie charts.")
+
+    if date_cols and num_cols:
+        st.markdown(f"**{num_cols[0]} Over Time**")
+        df_grouped = df.groupby(date_cols[0])[num_cols[0]].sum().reset_index()
+        fig_line = px.line(df_grouped, x=date_cols[0], y=num_cols[0], markers=True, template="plotly_dark")
+        st.plotly_chart(fig_line, use_container_width=True)
+
+    if len(num_cols) >= 2:
+        st.markdown(f"**Correlation: {num_cols[0]} vs {num_cols[1]}**")
+        fig_scat = px.scatter(df, x=num_cols[0], y=num_cols[1], template="plotly_dark")
+        st.plotly_chart(fig_scat, use_container_width=True)
+
+    st.divider()
+
+    st.subheader("🤖 AI Executive Summary")
+    if st.button("✨ Generate Insights"):
+        if not GEMINI_CONFIGURED:
+            st.error("Gemini AI is not configured.")
+        else:
+            with st.spinner("Analyzing data structure and statistics..."):
+                try:
+                    buffer = StringIO()
+                    df.info(buf=buffer)
+                    df_info = buffer.getvalue()
+                    df_desc = df.describe().to_string()
+                    prompt = f"""You are a senior data analyst. Provide 3-5 high-level bullet points on this data:
+                    Data Info: {df_info}
+                    Data Statistics: {df_desc}"""
+                    response = model.generate_content(prompt)
+                    st.markdown(response.text)
+                except Exception as e:
+                    st.error(f"AI Analysis Failed: {e}")
 
 # --- UI FUNCTION FOR CODE GENERATOR ---
 def page_code_generator():
-    # (Code generator function remains unchanged)
     st.header("Translate Natural Language to Code")
-    st.markdown("Enter a description of what you want to do, and the AI will generate the Python code for it.")
-    user_prompt = st.text_area("Your request:", height=150, placeholder="e.g., create a pandas dataframe with 5 rows of random data...")
+    st.markdown("Enter a description, and AI will generate the Python code.")
+    user_prompt = st.text_area("Your request:", height=150, placeholder="e.g., create a dataframe...")
     if st.button("Generate Code", type="primary"):
         if not GEMINI_CONFIGURED:
-            st.error("Gemini AI is not configured. Please set the GOOGLE_API_KEY environment variable.")
+            st.error("Gemini AI is not configured.")
             return
         if user_prompt:
             with st.spinner("🤖 Calling Gemini AI..."):
                 try:
-                    full_prompt = (
-                        f"You are a senior staff software engineer specializing in clean, efficient, and idiomatic Python code. "
-                        f"Your task is to generate a Python code snippet based on the user's request.\n\n"
-                        f"Follow these rules strictly:\n"
-                        f"1. Generate ONLY the raw Python code. Do not include explanations, comments, or markdown formatting like ```python.\n"
-                        f"2. Write the most standard and conventional Python code possible.\n"
-                        f"3. If a library is mentioned (e.g., NumPy), only use it if it's the most practical and conventional way to solve the problem. Do not force its use unnaturally.\n\n"
-                        f"User's request: '{user_prompt}'"
-                    )
+                    full_prompt = f"Generate ONLY raw Python code for: {user_prompt}"
                     response = model.generate_content(full_prompt)
                     st.code(response.text, language='python')
                 except Exception as e:
-                    st.error(f"An error occurred while generating the code: {e}")
-        else:
-            st.warning("Please enter a description.")
+                    st.error(f"Error: {e}")
 
 # --- UI FUNCTION FOR DATA ANALYZER ---
 def page_data_analyzer():
@@ -89,7 +259,7 @@ def page_data_analyzer():
     if uploaded_file is not None:
         df = load_data(uploaded_file)
         if df is None:
-            st.error("Unsupported file format. Please upload a CSV or XLSX file.")
+            st.error("Unsupported file format.")
             return
 
         if 'df_processed' not in st.session_state or st.session_state.get('file_name') != uploaded_file.name:
@@ -99,21 +269,9 @@ def page_data_analyzer():
         
         df_processed = st.session_state.df_processed
         
-       # REPLACE THESE LINES IN page_data_analyzer()
-        tab1, tab2, tab3 = st.tabs(["📊 Visualizer", "📈 Data Explorer & Cleaner", "🚀 One-Click Dashboard"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Visualizer", "🛠️ Data Explorer & Cleaner", "🚀 One-Click Dashboard", "🤖 ML Studio"])
         
-        with tab1:
-            # ... (Keep existing Visualizer code) ...
-            pass # (Don't actually write pass, just keep your existing code)
-
-        with tab2:
-            # ... (Keep existing Cleaner code) ...
-            pass # (Don't actually write pass, just keep your existing code)
-
-        # ADD THIS NEW BLOCK
-        with tab3:
-            render_ocd_dashboard(df_processed)
-        
+        # === TAB 1: VISUALIZER ===
         with tab1:
             st.subheader("Interactive Visualization")
             col1, col2 = st.columns([1, 2])
@@ -137,7 +295,6 @@ def page_data_analyzer():
                     x_axis = st.selectbox("X-axis:", df_processed.columns, index=0)
                     y_axis = st.selectbox("Y-axis:", df_processed.columns, index=1 if len(df_processed.columns) > 1 else 0)
 
-                st.markdown("##### Customization")
                 chart_title = st.text_input("Chart Title", value=f"Chart for {uploaded_file.name}")
             
             with col2:
@@ -164,141 +321,174 @@ def page_data_analyzer():
                         fig.update_layout(template="plotly_dark")
                         st.plotly_chart(fig, use_container_width=True)
                 except Exception as e:
-                    st.error(f"Could not generate chart. Please check column compatibility. Error: {e}")
+                    st.error(f"Could not generate chart: {e}")
 
+        # === TAB 2: EXPLORER & CLEANER ===
         with tab2:
-            st.subheader("Data Explorer & Cleaner")
+            st.subheader("🛠️ Advanced Data Cleaning Toolkit")
+            col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
+            missing_cells = df_processed.isnull().sum().sum()
+            total_cells = df_processed.size
+            duplicate_rows = df_processed.duplicated().sum()
             
-            # --- UNDO BUTTON ---
-            if len(st.session_state.history) > 1:
-                if st.button("↩️ Undo Last Action"):
-                    st.session_state.history.pop()
-                    st.session_state.df_processed = st.session_state.history[-1].copy()
-                    st.success("✅ Last action undone.")
-                    st.rerun()
+            with col_kpi1: st.metric("Data Completeness", f"{(1 - missing_cells/total_cells):.1%}")
+            with col_kpi2: st.metric("Missing Values", missing_cells, delta=f"-{missing_cells}" if missing_cells > 0 else None, delta_color="inverse")
+            with col_kpi3: st.metric("Duplicate Rows", duplicate_rows, delta=f"-{duplicate_rows}" if duplicate_rows > 0 else None, delta_color="inverse")
+            
+            st.markdown("---")
+            c1, c2 = st.columns(2, gap="large")
 
-            # --- AI-POWERED FEATURES ---
-            with st.expander("💡 AI Cleaning Suggestions"):
-                if st.button("Analyze for Suggestions"):
-                    with st.spinner("🤖 Analyzing for suggestions..."):
-                        try:
+            with c1:
+                st.caption("🤖 AI & Structure")
+                with st.expander("💡 AI Cleaning Suggestions"):
+                    if st.button("Analyze Data Health"):
+                        with st.spinner("🤖 Analyzing..."):
                             string_io = StringIO()
                             df_processed.info(buf=string_io)
-                            df_info = string_io.getvalue()
-                            df_head = df_processed.head().to_string()
-                            prompt = f"""You are an expert data analyst. Analyze the dataset profile below and suggest 3-5 specific, actionable cleaning steps. Focus on issues like inconsistent data types, potential typos, inconsistent capitalization, or columns that could be transformed for better analysis.
-                            **Dataframe Info:**\n{df_info}\n\n**First 5 Rows:**\n{df_head}"""
-                            response = model.generate_content(prompt)
-                            st.markdown(response.text)
-                        except Exception as e:
-                            st.error(f"An error occurred while generating suggestions: {e}")
-            
-            with st.expander("🪄 Natural Language Cleaning (Experimental)"):
-                st.warning("⚠️ This feature is experimental. Always review the changes to your data carefully.")
-                nl_command = st.text_input("Enter a cleaning command in plain English:", placeholder="e.g., make the 'country' column lowercase")
-                if st.button("Execute Command"):
-                    with st.spinner("🤖 Translating and executing..."):
-                        try:
-                            prompt = f"""You are a Pandas expert. A user wants to modify their DataFrame, named `df_processed`. Their command is: '{nl_command}'. Generate ONLY the single line of Python code to perform this and reassign it back to `df_processed`. Example: for 'make country uppercase', output `df_processed['country'] = df_processed['country'].str.upper()`."""
-                            code_response = model.generate_content(prompt)
-                            generated_code = code_response.text.strip().replace("```python", "").replace("```", "")
-                            
+                            prompt = f"Analyze this dataframe info and suggest 3 critical cleaning steps:\n{string_io.getvalue()}"
+                            try:
+                                response = model.generate_content(prompt)
+                                st.info(response.text)
+                            except: st.error("AI not configured.")
+
+                with st.expander("➕ Add New Column"):
+                    new_col_name = st.text_input("New Column Name:")
+                    new_col_val = st.text_input("Default Value (Applies to all rows):")
+                    if st.button("Add Column"):
+                        if new_col_name:
                             add_to_history(df_processed)
-                            local_vars = {'df_processed': st.session_state.df_processed.copy(), 'pd': pd}
-                            exec(generated_code, {}, local_vars)
-                            st.session_state.df_processed = local_vars['df_processed']
-                            st.success("✅ Command executed successfully.")
+                            st.session_state.df_processed[new_col_name] = new_col_val
+                            st.success(f"✅ Column '{new_col_name}' added.")
                             st.rerun()
-                        except Exception as e:
-                            st.error(f"Could not execute command. Error: {e}")
 
-            # --- CORE CLEANING TOOLKIT ---
-            with st.expander("💧 Handle Missing Values"):
-                missing_values = df_processed.isnull().sum()
-                if missing_values.sum() > 0:
-                    missing_df = missing_values[missing_values > 0].reset_index()
-                    missing_df.columns = ['Column', 'Missing Count']
-                    st.dataframe(missing_df)
-                    fill_option = st.selectbox("Select method to handle missing values:", ('None', 'Drop rows with any missing value', 'Fill with Mean', 'Fill with Median', 'Fill with Mode', 'Fill with a specific value'))
-                    fill_value = None
-                    if fill_option == 'Fill with a specific value':
-                        fill_value = st.text_input("Enter the value to fill with:")
-                    if st.button("Apply Missing Value Action"):
+                with st.expander("🗑️ Drop Unwanted Columns"):
+                    cols_to_drop = st.multiselect("Select columns to remove:", df_processed.columns)
+                    if st.button("Drop Selected Columns"):
                         add_to_history(df_processed)
-                        df_cleaned = df_processed.copy()
-                        if fill_option == 'Drop rows with any missing value': df_cleaned.dropna(inplace=True)
-                        elif fill_option == 'Fill with Mean': df_cleaned.fillna(df_cleaned.select_dtypes(include=['number']).mean(), inplace=True)
-                        elif fill_option == 'Fill with Median': df_cleaned.fillna(df_cleaned.select_dtypes(include=['number']).median(), inplace=True)
-                        elif fill_option == 'Fill with Mode':
-                            for col in df_cleaned.columns:
-                                if df_cleaned[col].isnull().any(): df_cleaned[col].fillna(df_cleaned[col].mode()[0], inplace=True)
-                        elif fill_option == 'Fill with a specific value' and fill_value: df_cleaned.fillna(fill_value, inplace=True)
-                        st.session_state.df_processed = df_cleaned
-                        st.success("✅ Missing value action applied!")
+                        st.session_state.df_processed = df_processed.drop(columns=cols_to_drop)
+                        st.success("✅ Columns dropped.")
                         st.rerun()
-                else:
-                    st.info("No missing values found.")
-            
-            with st.expander("🧹 Remove Duplicates"):
-                duplicates_count = df_processed.duplicated().sum()
-                st.write(f"Found **{duplicates_count}** duplicate rows.")
-                if st.button("Remove Duplicate Rows", disabled=bool(duplicates_count == 0)):
-                    add_to_history(df_processed)
-                    st.session_state.df_processed = df_processed.drop_duplicates()
-                    st.success("✅ Duplicates removed.")
-                    st.rerun()
 
-            with st.expander("🔄 Change Data Types"):
-                col_to_change = st.selectbox("Select column to change type:", df_processed.columns, key="col_type")
-                new_type = st.selectbox("Select new type:", ["object (text)", "int64 (integer)", "float64 (decimal)", "datetime64[ns] (date)"])
-                if st.button("Apply Type Change"):
-                    add_to_history(df_processed)
-                    try:
-                        if new_type.startswith("datetime"): st.session_state.df_processed[col_to_change] = pd.to_datetime(df_processed[col_to_change])
-                        else: st.session_state.df_processed[col_to_change] = df_processed[col_to_change].astype(new_type.split(" ")[0])
-                        st.success(f"✅ Changed type of '{col_to_change}' to {new_type}.")
-                        st.rerun()
-                    except Exception as e:
-                        st.error(f"Could not convert column. Error: {e}")
-
-            with st.expander("✏️ Text Manipulation"):
-                text_cols = df_processed.select_dtypes(include=['object']).columns
-                col_to_text_manip = st.selectbox("Select text column:", text_cols, key="text_manip")
-                manip_option = st.radio("Select operation:", ["Convert to Lowercase", "Convert to Uppercase", "Trim Whitespace"])
-                if st.button("Apply Text Operation"):
-                    add_to_history(df_processed)
-                    if manip_option == "Convert to Lowercase": st.session_state.df_processed[col_to_text_manip] = df_processed[col_to_text_manip].str.lower()
-                    elif manip_option == "Convert to Uppercase": st.session_state.df_processed[col_to_text_manip] = df_processed[col_to_text_manip].str.upper()
-                    elif manip_option == "Trim Whitespace": st.session_state.df_processed[col_to_text_manip] = df_processed[col_to_text_manip].str.strip()
-                    st.success(f"✅ Applied '{manip_option}' to '{col_to_text_manip}'.")
-                    st.rerun()
-
-            with st.expander("🔍 Find and Replace"):
-                col_to_replace = st.selectbox("Select column:", df_processed.columns, key="find_replace")
-                find_val = st.text_input("Find this value:")
-                replace_val = st.text_input("Replace with this value:")
-                if st.button("Apply Replace"):
-                    if find_val:
+                with st.expander("🔄 Change Data Types"):
+                    col_to_change = st.selectbox("Column:", df_processed.columns, key="dtype_col")
+                    new_type = st.selectbox("New Type:", ["string", "int", "float", "datetime"])
+                    if st.button("Apply Type Change"):
                         add_to_history(df_processed)
-                        st.session_state.df_processed[col_to_replace] = st.session_state.df_processed[col_to_replace].replace(find_val, replace_val)
-                        st.success(f"✅ Replaced '{find_val}' with '{replace_val}' in '{col_to_replace}'.")
-                        st.rerun()
+                        try:
+                            if new_type == "datetime": st.session_state.df_processed[col_to_change] = pd.to_datetime(df_processed[col_to_change])
+                            else: st.session_state.df_processed[col_to_change] = df_processed[col_to_change].astype(new_type)
+                            st.success("✅ Type Updated")
+                            st.rerun()
+                        except Exception as e: st.error(f"Error: {e}")
+
+            with c2:
+                st.caption("🧼 Content Cleaning")
+                
+                # --- FIX: IMPROVED MISSING VALUE HANDLING ---
+                with st.expander("💧 Handle Missing Values", expanded=True):
+                    if missing_cells > 0:
+                        st.dataframe(df_processed.isnull().sum()[df_processed.isnull().sum() > 0], height=100)
+                        
+                        # Split into different methods to handle text vs numbers correctly
+                        method = st.selectbox("Method:", [
+                            "Drop Rows with Missing Values", 
+                            "Fill with Mean (Numeric Cols Only)", 
+                            "Fill with Mode (Most Frequent - All Cols)", 
+                            "Fill with Zero / 'Unknown'"
+                        ])
+                        
+                        if st.button("Apply Fix"):
+                            add_to_history(df_processed)
+                            
+                            if method == "Drop Rows with Missing Values":
+                                st.session_state.df_processed = df_processed.dropna()
+                                
+                            elif method == "Fill with Mean (Numeric Cols Only)":
+                                # Only fill numeric columns to prevent errors
+                                num_cols = df_processed.select_dtypes(include=['number']).columns
+                                st.session_state.df_processed[num_cols] = df_processed[num_cols].fillna(df_processed[num_cols].mean())
+                                
+                            elif method == "Fill with Mode (Most Frequent - All Cols)":
+                                for col in df_processed.columns:
+                                    if df_processed[col].isnull().any():
+                                        st.session_state.df_processed[col] = df_processed[col].fillna(df_processed[col].mode()[0])
+                                        
+                            elif method == "Fill with Zero / 'Unknown'":
+                                num_cols = df_processed.select_dtypes(include=['number']).columns
+                                cat_cols = df_processed.select_dtypes(exclude=['number']).columns
+                                if len(num_cols) > 0:
+                                    st.session_state.df_processed[num_cols] = df_processed[num_cols].fillna(0)
+                                if len(cat_cols) > 0:
+                                    st.session_state.df_processed[cat_cols] = df_processed[cat_cols].fillna("Unknown")
+                                    
+                            st.success("✅ Missing values handled!")
+                            st.rerun()
                     else:
-                        st.warning("Please enter a value to find.")
+                        st.success("✨ No missing values found!")
+
+                with st.expander("🧹 Remove Duplicates"):
+                    if duplicate_rows > 0:
+                        st.warning(f"Found {duplicate_rows} duplicates.")
+                        if st.button("Remove All Duplicates"):
+                            add_to_history(df_processed)
+                            st.session_state.df_processed = df_processed.drop_duplicates()
+                            st.rerun()
+                    else:
+                        st.success("✨ No duplicates found.")
+
+                with st.expander("✏️ Text & String Ops"):
+                    text_col = st.selectbox("Text Column:", df_processed.select_dtypes(include=['object']).columns)
+                    action = st.selectbox("Action:", ["Uppercase", "Lowercase", "Trim Spaces"])
+                    if st.button("Apply Text Fix"):
+                        add_to_history(df_processed)
+                        if action == "Uppercase": st.session_state.df_processed[text_col] = df_processed[text_col].str.upper()
+                        elif action == "Lowercase": st.session_state.df_processed[text_col] = df_processed[text_col].str.lower()
+                        elif action == "Trim Spaces": st.session_state.df_processed[text_col] = df_processed[text_col].str.strip()
+                        st.rerun()
+
+                with st.expander("🔍 Find and Replace"):
+                    fr_col = st.selectbox("Column:", df_processed.columns, key="fr_col")
+                    find_txt = st.text_input("Find:")
+                    replace_txt = st.text_input("Replace with:")
+                    if st.button("Replace All"):
+                        add_to_history(df_processed)
+                        st.session_state.df_processed[fr_col] = df_processed[fr_col].replace(find_txt, replace_txt)
+                        st.success("✅ Replaced")
+                        st.rerun()
 
             st.markdown("---")
-            st.subheader("Current Data")
-            st.dataframe(df_processed)
-            st.markdown("---")
-            st.subheader("Download Processed Data")
-            st.download_button(label="📥 Download CSV", data=convert_df_to_csv(df_processed), file_name=f"processed_{uploaded_file.name}.csv", mime="text/csv")
+            st.subheader("📝 Live Data Editor")
+            # Use dynamic key to ensure refreshing when history changes
+            editor_key = f"editor_{len(st.session_state.history)}"
+            edited_df = st.data_editor(df_processed, num_rows="dynamic", use_container_width=True, key=editor_key)
             
+            if not edited_df.equals(df_processed):
+                 add_to_history(df_processed)
+                 st.session_state.df_processed = edited_df
+                 st.rerun()
+
             st.markdown("---")
-            st.subheader("🤖 AI-Powered Data Summary")
-            if st.button("Generate Summary"):
-                with st.spinner("🧠 Analyzing your data..."):
-                    # AI Summary logic...
-                    pass
+            st.subheader("💾 Download Results")
+            d_col1, d_col2, d_col3 = st.columns([1, 1, 2])
+            with d_col1:
+                st.download_button("📥 Download CSV", data=convert_df_to_csv(df_processed), file_name="clean_data.csv", mime="text/csv", use_container_width=True)
+            with d_col2:
+                st.download_button("📥 Download Excel", data=convert_df_to_excel(df_processed), file_name="clean_data.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True)
+            
+            if len(st.session_state.history) > 1:
+                with d_col3:
+                    if st.button("↩️ Undo Last Action", use_container_width=True):
+                        st.session_state.history.pop()
+                        st.session_state.df_processed = st.session_state.history[-1].copy()
+                        st.rerun()
+
+        # === TAB 3: ONE-CLICK DASHBOARD ===
+        with tab3:
+            render_ocd_dashboard(df_processed)
+
+        # === TAB 4: ML STUDIO ===
+        with tab4:
+            render_ml_studio(df_processed)
 
     else:
         st.info("Please upload a CSV or Excel file to begin analysis.")
@@ -309,7 +499,11 @@ def page_data_analyzer():
 # --- SIDEBAR AND MAIN APP LOGIC ---
 with st.sidebar:
     st.title("Decisyn AI")
-    st.image("logo.jpg", width=120)
+    if os.path.exists("logo.jpg"):
+        st.image("logo.jpg", width=120)
+    else:
+        st.markdown("### 🤖") 
+        
     st.markdown("<p style='font-size:x-small;'>Designed and developed by Dhananjay loks</p>", unsafe_allow_html=True)
     st.markdown("---")
     app_mode = st.radio("Navigation", ["AI Code Generator", "Excel Analyzer"], label_visibility="collapsed")
@@ -322,104 +516,4 @@ with st.sidebar:
 if app_mode == "AI Code Generator":
     page_code_generator()
 elif app_mode == "Excel Analyzer":
-
     page_data_analyzer()
-    # ==========================================
-# 🚀 NEW ONE-CLICK DASHBOARD (OCD) LOGIC
-# ==========================================
-def render_ocd_dashboard(df):
-    st.markdown("## 🚀 One-Click Dashboard")
-    st.markdown("Automatic insights based on your dataset structure.")
-
-    # 1. Data Type Separation
-    num_cols = df.select_dtypes(include=['number']).columns.tolist()
-    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
-
-    # 2. KPI Section (Replaces Flask 'select-kpis' route)
-    st.subheader("📊 Key Performance Indicators")
-    
-    # Allow user to select specific KPIs (Default to first 3 numerical columns)
-    default_kpis = num_cols[:3] if len(num_cols) >= 3 else num_cols
-    selected_kpis = st.multiselect("Select Metrics to Track:", num_cols, default=default_kpis)
-
-    # Display KPIs in columns
-    if selected_kpis:
-        cols = st.columns(len(selected_kpis) + 1)
-        cols[0].metric("Total Rows", f"{len(df):,}") # Always show row count
-        
-        for i, col_name in enumerate(selected_kpis):
-            total_val = df[col_name].sum()
-            cols[i+1].metric(f"Total {col_name}", f"{total_val:,.2f}")
-    else:
-        st.metric("Total Rows", len(df))
-
-    st.divider()
-
-    # 3. Automated Charts (Replaces Flask 'dashboard' route logic)
-    st.subheader("📈 Auto-Generated Visualizations")
-    
-    # Heuristic: Find best categorical column (between 2 and 20 unique values)
-    best_cat_col = next((col for col in cat_cols if 2 <= df[col].nunique() <= 20), None)
-
-    col1, col2 = st.columns(2)
-
-    # Chart 1 & 2: Bar and Pie (if applicable)
-    if best_cat_col and num_cols:
-        with col1:
-            st.markdown(f"**{num_cols[0]} by {best_cat_col}**")
-            fig_bar = px.bar(df, x=best_cat_col, y=num_cols[0], template="plotly_dark")
-            st.plotly_chart(fig_bar, use_container_width=True)
-        
-        with col2:
-            st.markdown(f"**Distribution of {num_cols[0]}**")
-            fig_pie = px.pie(df, names=best_cat_col, values=num_cols[0], template="plotly_dark")
-            st.plotly_chart(fig_pie, use_container_width=True)
-    elif not best_cat_col:
-        st.info("No suitable categorical column found (needs 2-20 unique values) for Bar/Pie charts.")
-
-    # Chart 3: Line Chart (if date column exists)
-    if date_cols and num_cols:
-        st.markdown(f"**{num_cols[0]} Over Time**")
-        # Aggregate by date to avoid messy charts
-        df_grouped = df.groupby(date_cols[0])[num_cols[0]].sum().reset_index()
-        fig_line = px.line(df_grouped, x=date_cols[0], y=num_cols[0], markers=True, template="plotly_dark")
-        st.plotly_chart(fig_line, use_container_width=True)
-
-    # Chart 4: Scatter Plot (if 2+ numerical columns exist)
-    if len(num_cols) >= 2:
-        st.markdown(f"**Correlation: {num_cols[0]} vs {num_cols[1]}**")
-        fig_scat = px.scatter(df, x=num_cols[0], y=num_cols[1], template="plotly_dark")
-        st.plotly_chart(fig_scat, use_container_width=True)
-
-    st.divider()
-
-    # 4. AI Summary (Replaces Flask 'ai-summary' route)
-    st.subheader("🤖 AI Executive Summary")
-    if st.button("✨ Generate Insights"):
-        if not GEMINI_CONFIGURED:
-            st.error("Gemini AI is not configured.")
-        else:
-            with st.spinner("Analyzing data structure and statistics..."):
-                try:
-                    # Prepare the prompt inputs
-                    buffer = StringIO()
-                    df.info(buf=buffer)
-                    df_info = buffer.getvalue()
-                    df_desc = df.describe().to_string()
-
-                    prompt = f"""
-                    You are a senior data analyst. A user has uploaded a dataset with {len(df)} rows.
-                    Based on the following technical summaries, provide 3-5 high-level, bullet-point insights for a non-technical manager.
-                    Focus on potential trends, interesting distributions, or data quality issues.
-                    
-                    Data Info:
-                    {df_info}
-                    
-                    Data Statistics:
-                    {df_desc}
-                    """
-                    response = model.generate_content(prompt)
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI Analysis Failed: {e}")
