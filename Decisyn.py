@@ -99,7 +99,20 @@ def page_data_analyzer():
         
         df_processed = st.session_state.df_processed
         
-        tab1, tab2 = st.tabs(["📊 Visualizer", "📈 Data Explorer & Cleaner"])
+       # REPLACE THESE LINES IN page_data_analyzer()
+        tab1, tab2, tab3 = st.tabs(["📊 Visualizer", "📈 Data Explorer & Cleaner", "🚀 One-Click Dashboard"])
+        
+        with tab1:
+            # ... (Keep existing Visualizer code) ...
+            pass # (Don't actually write pass, just keep your existing code)
+
+        with tab2:
+            # ... (Keep existing Cleaner code) ...
+            pass # (Don't actually write pass, just keep your existing code)
+
+        # ADD THIS NEW BLOCK
+        with tab3:
+            render_ocd_dashboard(df_processed)
         
         with tab1:
             st.subheader("Interactive Visualization")
@@ -309,4 +322,104 @@ with st.sidebar:
 if app_mode == "AI Code Generator":
     page_code_generator()
 elif app_mode == "Excel Analyzer":
+
     page_data_analyzer()
+    # ==========================================
+# 🚀 NEW ONE-CLICK DASHBOARD (OCD) LOGIC
+# ==========================================
+def render_ocd_dashboard(df):
+    st.markdown("## 🚀 One-Click Dashboard")
+    st.markdown("Automatic insights based on your dataset structure.")
+
+    # 1. Data Type Separation
+    num_cols = df.select_dtypes(include=['number']).columns.tolist()
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
+
+    # 2. KPI Section (Replaces Flask 'select-kpis' route)
+    st.subheader("📊 Key Performance Indicators")
+    
+    # Allow user to select specific KPIs (Default to first 3 numerical columns)
+    default_kpis = num_cols[:3] if len(num_cols) >= 3 else num_cols
+    selected_kpis = st.multiselect("Select Metrics to Track:", num_cols, default=default_kpis)
+
+    # Display KPIs in columns
+    if selected_kpis:
+        cols = st.columns(len(selected_kpis) + 1)
+        cols[0].metric("Total Rows", f"{len(df):,}") # Always show row count
+        
+        for i, col_name in enumerate(selected_kpis):
+            total_val = df[col_name].sum()
+            cols[i+1].metric(f"Total {col_name}", f"{total_val:,.2f}")
+    else:
+        st.metric("Total Rows", len(df))
+
+    st.divider()
+
+    # 3. Automated Charts (Replaces Flask 'dashboard' route logic)
+    st.subheader("📈 Auto-Generated Visualizations")
+    
+    # Heuristic: Find best categorical column (between 2 and 20 unique values)
+    best_cat_col = next((col for col in cat_cols if 2 <= df[col].nunique() <= 20), None)
+
+    col1, col2 = st.columns(2)
+
+    # Chart 1 & 2: Bar and Pie (if applicable)
+    if best_cat_col and num_cols:
+        with col1:
+            st.markdown(f"**{num_cols[0]} by {best_cat_col}**")
+            fig_bar = px.bar(df, x=best_cat_col, y=num_cols[0], template="plotly_dark")
+            st.plotly_chart(fig_bar, use_container_width=True)
+        
+        with col2:
+            st.markdown(f"**Distribution of {num_cols[0]}**")
+            fig_pie = px.pie(df, names=best_cat_col, values=num_cols[0], template="plotly_dark")
+            st.plotly_chart(fig_pie, use_container_width=True)
+    elif not best_cat_col:
+        st.info("No suitable categorical column found (needs 2-20 unique values) for Bar/Pie charts.")
+
+    # Chart 3: Line Chart (if date column exists)
+    if date_cols and num_cols:
+        st.markdown(f"**{num_cols[0]} Over Time**")
+        # Aggregate by date to avoid messy charts
+        df_grouped = df.groupby(date_cols[0])[num_cols[0]].sum().reset_index()
+        fig_line = px.line(df_grouped, x=date_cols[0], y=num_cols[0], markers=True, template="plotly_dark")
+        st.plotly_chart(fig_line, use_container_width=True)
+
+    # Chart 4: Scatter Plot (if 2+ numerical columns exist)
+    if len(num_cols) >= 2:
+        st.markdown(f"**Correlation: {num_cols[0]} vs {num_cols[1]}**")
+        fig_scat = px.scatter(df, x=num_cols[0], y=num_cols[1], template="plotly_dark")
+        st.plotly_chart(fig_scat, use_container_width=True)
+
+    st.divider()
+
+    # 4. AI Summary (Replaces Flask 'ai-summary' route)
+    st.subheader("🤖 AI Executive Summary")
+    if st.button("✨ Generate Insights"):
+        if not GEMINI_CONFIGURED:
+            st.error("Gemini AI is not configured.")
+        else:
+            with st.spinner("Analyzing data structure and statistics..."):
+                try:
+                    # Prepare the prompt inputs
+                    buffer = StringIO()
+                    df.info(buf=buffer)
+                    df_info = buffer.getvalue()
+                    df_desc = df.describe().to_string()
+
+                    prompt = f"""
+                    You are a senior data analyst. A user has uploaded a dataset with {len(df)} rows.
+                    Based on the following technical summaries, provide 3-5 high-level, bullet-point insights for a non-technical manager.
+                    Focus on potential trends, interesting distributions, or data quality issues.
+                    
+                    Data Info:
+                    {df_info}
+                    
+                    Data Statistics:
+                    {df_desc}
+                    """
+                    response = model.generate_content(prompt)
+                    st.markdown(response.text)
+                except Exception as e:
+                    st.error(f"AI Analysis Failed: {e}")
