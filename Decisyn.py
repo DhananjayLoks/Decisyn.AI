@@ -3,18 +3,19 @@ import pandas as pd
 import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from io import StringIO, BytesIO
 import os
 import google.generativeai as genai
-import matplotlib.pyplot as plt # For Dendrograms
+import matplotlib.pyplot as plt
+import scipy.cluster.hierarchy as shc
 
 # --- ML Libraries ---
 from sklearn.model_selection import train_test_split
 from sklearn.linear_model import LinearRegression, LogisticRegression
 from sklearn.cluster import KMeans
 from sklearn.metrics import r2_score, mean_squared_error, accuracy_score, confusion_matrix
-from sklearn.preprocessing import LabelEncoder
-import scipy.cluster.hierarchy as shc # For Hierarchical Clustering
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -37,7 +38,6 @@ try:
     else:
         GEMINI_CONFIGURED = False
 except Exception as e:
-    st.error(f"Error configuring Gemini AI: {e}")
     GEMINI_CONFIGURED = False
 
 # --- Caching Functions ---
@@ -68,264 +68,283 @@ def add_to_history(df):
     st.session_state.history.append(df.copy())
 
 # ==========================================
-# 🤖 PRO ML STUDIO FUNCTION
+# 🎨 DYNAMIC THEME ENGINE
+# ==========================================
+def apply_theme_style(theme_name):
+    themes = {
+        "Dark Pro": {
+            "bg": "#0E1117", "card_bg": "#1E1E1E", "text": "#FAFAFA", "border": "#333", "accent": "#00CC96", "shadow": "0 4px 6px rgba(0,0,0,0.3)"
+        },
+        "Light Glass": {
+            "bg": "#FFFFFF", "card_bg": "#F0F2F6", "text": "#31333F", "border": "#E6E6EA", "accent": "#FF4B4B", "shadow": "0 2px 4px rgba(0,0,0,0.1)"
+        },
+        "Neon Cyber": {
+            "bg": "#000000", "card_bg": "#090909", "text": "#00FF00", "border": "#00FF00", "accent": "#FF00FF", "shadow": "0 0 15px rgba(0,255,0,0.4)"
+        },
+        "Sunset Synth": {
+            "bg": "#2b102f", "card_bg": "#411b4b", "text": "#ffd1dc", "border": "#ff9900", "accent": "#ff0055", "shadow": "0 4px 15px rgba(255, 153, 0, 0.3)"
+        },
+        "Midnight Blue": {
+            "bg": "#021024", "card_bg": "#052659", "text": "#7DA0CA", "border": "#5483B3", "accent": "#C1E8FF", "shadow": "0 4px 10px rgba(0,0,0,0.5)"
+        },
+        "Forest Glass": {
+            "bg": "#1a2f23", "card_bg": "rgba(255,255,255,0.1)", "text": "#e0f2e9", "border": "#4ade80", "accent": "#22c55e", "shadow": "0 4px 12px rgba(0,0,0,0.2)"
+        }
+    }
+    t = themes.get(theme_name, themes["Dark Pro"])
+    
+    st.markdown(f"""
+        <style>
+        .stApp {{ background-color: {t['bg']}; color: {t['text']}; }}
+        .metric-card {{
+            background-color: {t['card_bg']}; border-radius: 15px; padding: 15px 20px;
+            box-shadow: {t['shadow']}; border: 1px solid {t['border']}; margin-bottom: 15px;
+            transition: all 0.3s ease-in-out; backdrop-filter: blur(10px);
+        }}
+        .metric-card:hover {{ transform: translateY(-5px); border-color: {t['accent']}; box-shadow: 0 8px 20px rgba(0,0,0,0.6); }}
+        .metric-label {{ font-size: 13px; color: {t['text']}; opacity: 0.8; margin-bottom: 5px; text-transform: uppercase; font-weight: 600; }}
+        .metric-value {{ font-size: 28px; font-weight: 700; color: {t['text']}; }}
+        /* Sidebar Cleanup */
+        [data-testid="stSidebar"] {{ border-right: 1px solid {t['border']}; }}
+        </style>
+    """, unsafe_allow_html=True)
+    
+    if theme_name == "Light Glass": return "plotly_white"
+    elif theme_name in ["Neon Cyber", "Sunset Synth", "Midnight Blue"]: return "plotly_dark"
+    else: return "plotly_dark"
+
+# ==========================================
+# 🤖 PRO ML STUDIO
 # ==========================================
 def render_ml_studio(df):
     st.markdown("## 🤖 Pro ML Studio")
-    st.markdown("Advanced analytics, forecasting, and segmentation.")
+    st.markdown("Advanced analytics environment for MBA & Data Science.")
+    ml_tab1, ml_tab2, ml_tab3 = st.tabs(["🔮 Seasonal Forecast", "🎯 Supervised (Prediction)", "🧬 Unsupervised (Clustering)"])
 
-    # Tabs for different ML Tasks
-    ml_tab1, ml_tab2, ml_tab3 = st.tabs(["🔮 Forecast Future", "🎯 Target Prediction (Supervised)", "🧬 Advanced Clustering"])
-
-    # === TAB 1: TIME SERIES FORECASTING ===
     with ml_tab1:
         st.subheader("Time-Series Forecasting")
-        st.caption("Predict future values based on historical trends.")
-
         date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
         num_cols = df.select_dtypes(include=['number']).columns.tolist()
-
-        if not date_cols:
-            st.error("⚠️ No Date column found! Please convert a column to 'datetime' in the Cleaner tab first.")
-        else:
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                date_col = st.selectbox("Select Date Column:", date_cols)
-            with c2:
-                target_col = st.selectbox("Select Value to Predict (e.g., Sales):", num_cols)
-            with c3:
-                horizon = st.slider("Forecast Horizon (Years):", 1, 10, 5)
-
-            if st.button("🚀 Generate Forecast"):
-                # 1. Prepare Data (Group by date to handle duplicates)
-                df_grouped = df.groupby(date_col)[target_col].sum().reset_index()
-                df_grouped = df_grouped.sort_values(date_col)
-                
-                # 2. Create Time Features (Ordinal dates for Regression)
-                df_grouped['Time_Index'] = np.arange(len(df_grouped))
-                
-                # 3. Train Linear Trend Model
-                X = df_grouped[['Time_Index']]
-                y = df_grouped[target_col]
+        if date_cols:
+            c1, c2 = st.columns(2)
+            with c1: date_col = st.selectbox("Date Column", date_cols)
+            with c2: target_col = st.selectbox("Target", num_cols)
+            if st.button("Generate Forecast"):
+                df_g = df.groupby(date_col)[target_col].sum().reset_index().sort_values(date_col)
+                df_g['idx'] = np.arange(len(df_g))
                 model = LinearRegression()
-                model.fit(X, y)
-                
-                # 4. Create Future DataFrame
-                last_date = df_grouped[date_col].max()
-                # Assuming monthly data roughly; extending index
-                future_steps = horizon * 12 # 12 months per year estimate
-                future_indices = np.arange(len(df_grouped), len(df_grouped) + future_steps).reshape(-1, 1)
-                future_preds = model.predict(future_indices)
-                
-                # Create Future Dates (Approximate)
-                future_dates = pd.date_range(start=last_date, periods=future_steps + 1, freq='M')[1:]
-                
-                df_future = pd.DataFrame({
-                    date_col: future_dates,
-                    target_col: future_preds,
-                    'Type': 'Forecast'
-                })
-                
-                df_grouped['Type'] = 'History'
-                
-                # Combine
-                df_final = pd.concat([df_grouped[[date_col, target_col, 'Type']], df_future])
-                
-                # 5. Visualization
-                fig = px.line(df_final, x=date_col, y=target_col, color='Type', 
-                              title=f"{target_col} Forecast: Next {horizon} Years",
-                              color_discrete_map={"History": "cyan", "Forecast": "orange"},
-                              template="plotly_dark")
+                model.fit(df_g[['idx']], df_g[target_col])
+                future_idx = np.arange(len(df_g), len(df_g)+12).reshape(-1, 1)
+                preds = model.predict(future_idx)
+                fig = px.line(y=np.concatenate([df_g[target_col], preds]), title="Trend Forecast")
                 st.plotly_chart(fig, use_container_width=True)
-                
-                st.success(f"✅ Forecast generated for {horizon} years into the future!")
 
-    # === TAB 2: SUPERVISED LEARNING (REGRESSION/CLASSIFICATION) ===
     with ml_tab2:
-        st.subheader("Predictive Modeling & What-If Analysis")
-        
-        model_type = st.selectbox("Choose Algorithm:", ["Linear Regression (Predict Numbers)", "Logistic Regression (Predict Categories)"])
-        
-        c1, c2 = st.columns(2)
-        with c1: target = st.selectbox("Target Variable (y):", df.columns)
-        with c2: features = st.multiselect("Feature Variables (X):", [c for c in df.columns if c != target])
-        
-        if st.button("Train & Build Calculator") and features:
-            X = df[features].dropna()
+        st.subheader("Prediction")
+        target = st.selectbox("Target Variable", df.columns)
+        feats = st.multiselect("Features", [c for c in df.columns if c != target])
+        if st.button("Train Model") and feats:
+            X = pd.get_dummies(df[feats].dropna())
             y = df.loc[X.index, target]
-            
-            # Encoding
-            X = pd.get_dummies(X, drop_first=True)
-            le = None
-            if y.dtype == 'object':
+            if pd.api.types.is_numeric_dtype(y):
+                m = LinearRegression()
+                m.fit(X, y)
+                st.metric("R2 Score", f"{r2_score(y, m.predict(X)):.2f}")
+            else:
                 le = LabelEncoder()
                 y = le.fit_transform(y)
-                
-            X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-            
-            model = None
-            if model_type.startswith("Linear"):
-                model = LinearRegression()
-                model.fit(X_train, y_train)
-                score = r2_score(y_test, model.predict(X_test))
-                st.metric("Model Accuracy (R²)", f"{score:.2%}")
-            else:
-                model = LogisticRegression(max_iter=1000)
-                model.fit(X_train, y_train)
-                score = accuracy_score(y_test, model.predict(X_test))
-                st.metric("Model Accuracy", f"{score:.2%}")
-                
-            st.markdown("---")
-            st.subheader("🧮 What-If Calculator")
-            st.markdown("Change the inputs below to predict the outcome.")
-            
-            # Dynamic Input Generation
-            user_inputs = {}
-            cols = st.columns(len(features))
-            for i, col_name in enumerate(features):
-                with cols[i % len(features)]:
-                    if pd.api.types.is_numeric_dtype(df[col_name]):
-                        val = st.number_input(f"{col_name}", value=float(df[col_name].mean()))
-                    else:
-                        val = st.selectbox(f"{col_name}", df[col_name].unique())
-                    user_inputs[col_name] = val
-            
-            if st.button("Predict Outcome"):
-                # Prepare input data matching training shape
-                input_df = pd.DataFrame([user_inputs])
-                input_df = pd.get_dummies(input_df)
-                # Align columns (missing columns get 0)
-                input_df = input_df.reindex(columns=X.columns, fill_value=0)
-                
-                prediction = model.predict(input_df)[0]
-                
-                if le: # Decode if categorical
-                    prediction = le.inverse_transform([prediction])[0]
-                    
-                st.success(f"### 🔮 Predicted {target}: {prediction}")
+                m = LogisticRegression()
+                m.fit(X, y)
+                st.metric("Accuracy", f"{accuracy_score(y, m.predict(X)):.2%}")
 
-    # === TAB 3: ADVANCED CLUSTERING ===
     with ml_tab3:
-        st.subheader("Advanced Segmentation")
-        cluster_method = st.radio("Method:", ["K-Means (Group & Visualize)", "Hierarchical (Dendrogram)"], horizontal=True)
-        
-        cluster_cols = st.multiselect("Select Features to Cluster:", df.select_dtypes(include=['number']).columns)
-        
-        if cluster_cols:
-            X = df[cluster_cols].dropna()
-            
-            if cluster_method.startswith("K-Means"):
-                k = st.slider("Number of Clusters (k):", 2, 8, 3)
-                if st.button("Run K-Means"):
-                    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-                    df['Cluster'] = kmeans.fit_predict(X).astype(str)
-                    
-                    # Advanced 3D or 2D Plot
-                    if len(cluster_cols) >= 3:
-                        fig = px.scatter_3d(df, x=cluster_cols[0], y=cluster_cols[1], z=cluster_cols[2], color='Cluster', title="3D Cluster Visualization", template="plotly_dark")
-                    elif len(cluster_cols) == 2:
-                        fig = px.scatter(df, x=cluster_cols[0], y=cluster_cols[1], color='Cluster', title="2D Cluster Visualization", template="plotly_dark")
-                        # Add Centroids
-                        centroids = kmeans.cluster_centers_
-                        fig.add_trace(go.Scatter(x=centroids[:,0], y=centroids[:,1], mode='markers', marker=dict(color='red', size=12, symbol='x'), name='Centroids'))
-                    else:
-                        fig = px.scatter(df, x=df.index, y=cluster_cols[0], color='Cluster', title="1D Cluster Visualization", template="plotly_dark")
-                    
-                    st.plotly_chart(fig, use_container_width=True)
-                    
-            elif cluster_method.startswith("Hierarchical"):
-                st.subheader("🌳 Dendrogram Visualization")
-                st.caption("This chart helps you decide how many clusters exist naturally in your data.")
-                
-                if st.button("Generate Dendrogram"):
-                    with st.spinner("Calculating Linkages... (This may take a moment)"):
-                        # limit rows for performance if huge
-                        if len(X) > 2000:
-                            st.warning("Dataset too large for clean Dendrogram. Sampling first 1000 rows.")
-                            X_sample = X.head(1000)
-                        else:
-                            X_sample = X
-                            
-                        plt.figure(figsize=(10, 7))
-                        plt.title("Customer Dendrogram")
-                        dend = shc.dendrogram(shc.linkage(X_sample, method='ward'))
-                        plt.axhline(y=6, color='r', linestyle='--')
-                        st.pyplot(plt)
-
+        st.subheader("Clustering")
+        feats = st.multiselect("Cluster Features", df.select_dtypes(include=['number']).columns)
+        k = st.slider("Clusters (k)", 2, 8, 3)
+        if st.button("Run K-Means") and feats:
+            X = df[feats].dropna()
+            kmeans = KMeans(n_clusters=k)
+            df['Cluster'] = kmeans.fit_predict(X)
+            st.plotly_chart(px.scatter(df, x=feats[0], y=feats[1], color='Cluster'))
 
 # ==========================================
-# 🚀 ONE-CLICK DASHBOARD FUNCTION
+# 🚀 UPDATED: INTERACTIVE DASHBOARD
 # ==========================================
 def render_ocd_dashboard(df):
-    st.markdown("## 🚀 One-Click Dashboard")
-    st.markdown("Automatic insights based on your dataset structure.")
-
-    num_cols = df.select_dtypes(include=['number']).columns.tolist()
-    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
-    date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
-
-    st.subheader("📊 Key Performance Indicators")
-    default_kpis = num_cols[:3] if len(num_cols) >= 3 else num_cols
-    selected_kpis = st.multiselect("Select Metrics to Track:", num_cols, default=default_kpis)
-
-    if selected_kpis:
-        cols = st.columns(len(selected_kpis) + 1)
-        cols[0].metric("Total Rows", f"{len(df):,}")
-        for i, col_name in enumerate(selected_kpis):
-            total_val = df[col_name].sum()
-            cols[i+1].metric(f"Total {col_name}", f"{total_val:,.2f}")
+    # --- SIDEBAR CONFIGURATION ---
+    st.sidebar.header("🎨 Dashboard Settings")
+    
+    # 1. Theme (Sidebar)
+    selected_theme = st.sidebar.selectbox("Theme", ["Dark Pro", "Light Glass", "Neon Cyber", "Sunset Synth", "Midnight Blue", "Forest Glass"])
+    plotly_template = apply_theme_style(selected_theme)
+    
+    # Colors
+    if selected_theme == "Neon Cyber":
+        colors = ['#FF00FF', '#00FF00', '#00FFFF', '#FFFF00']
+        bg_color = "#000000"
+    elif selected_theme == "Sunset Synth":
+        colors = px.colors.sequential.Plasma
+        bg_color = "#2b102f"
+    elif selected_theme == "Forest Glass":
+        colors = px.colors.sequential.Greens
+        bg_color = "#1a2f23"
+    elif selected_theme == "Light Glass":
+        colors = px.colors.qualitative.Bold
+        bg_color = "#FFFFFF"
     else:
-        st.metric("Total Rows", len(df))
+        colors = px.colors.qualitative.Vivid
+        bg_color = "rgba(0,0,0,0)"
 
+    # 2. KPI Selector (Sidebar)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("📊 KPI Management")
+    num_cols = df.select_dtypes(include=['number']).columns.tolist()
+    selected_kpis = []
+    if num_cols:
+        selected_kpis = st.sidebar.multiselect("Select KPIs to Display", num_cols, default=num_cols[:4] if len(num_cols) >= 4 else num_cols)
+
+    # 3. Filters (Sidebar)
+    st.sidebar.markdown("---")
+    st.sidebar.subheader("🌪️ Global Filters")
+    df_filtered = df.copy()
+    
+    cat_cols = df.select_dtypes(include=['object', 'category']).columns.tolist()
+    if cat_cols:
+        f1 = st.sidebar.multiselect(f"By {cat_cols[0]}", df[cat_cols[0]].unique())
+        if f1: df_filtered = df_filtered[df_filtered[cat_cols[0]].isin(f1)]
+        if len(cat_cols) > 1:
+            f2 = st.sidebar.multiselect(f"By {cat_cols[1]}", df[cat_cols[1]].unique())
+            if f2: df_filtered = df_filtered[df_filtered[cat_cols[1]].isin(f2)]
+
+    date_cols = df.select_dtypes(include=['datetime', 'datetime64[ns]']).columns.tolist()
+    if date_cols:
+        min_d, max_d = df[date_cols[0]].min(), df[date_cols[0]].max()
+        dates = st.sidebar.date_input("Date Range", [min_d, max_d], min_value=min_d, max_value=max_d)
+        if len(dates) == 2:
+            df_filtered = df_filtered[(df_filtered[date_cols[0]].dt.date >= dates[0]) & (df_filtered[date_cols[0]].dt.date <= dates[1])]
+
+    # 4. Download (Sidebar)
+    st.sidebar.markdown("---")
+    st.sidebar.download_button(
+        label="📥 Download Filtered Data",
+        data=convert_df_to_excel(df_filtered),
+        file_name="dashboard_data.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+    # --- MAIN DASHBOARD LAYOUT ---
+    st.markdown("## 🚀 Interactive Business Dashboard")
+    
+    # KPI Section
+    if selected_kpis:
+        kpi_cols = st.columns(len(selected_kpis))
+        for i, col in enumerate(selected_kpis):
+            val = df_filtered[col].sum()
+            with kpi_cols[i]:
+                st.markdown(f"""<div class="metric-card"><div class="metric-label">{col}</div><div class="metric-value">{val:,.0f}</div></div>""", unsafe_allow_html=True)
+    
     st.divider()
 
-    st.subheader("📈 Auto-Generated Visualizations")
-    best_cat_col = next((col for col in cat_cols if 2 <= df[col].nunique() <= 20), None)
-    col1, col2 = st.columns(2)
+    # Charts Grid (2x2) - Controls Hidden in Expanders
+    st.subheader("📈 Visual Analytics")
+    r1_c1, r1_c2 = st.columns(2)
+    r2_c1, r2_c2 = st.columns(2)
+    
+    # Chart 1: Category Breakdown
+    with r1_c1:
+        st.markdown("**1. Category Breakdown**")
+        if cat_cols and num_cols:
+            with st.expander("⚙️ Edit Chart"):
+                c1_type = st.selectbox("Type", ["Donut", "Pie", "Sunburst", "Treemap"], key="c1_t")
+                c1_group = st.selectbox("Group By", cat_cols, key="c1_g")
+                c1_val = st.selectbox("Value", num_cols, key="c1_v")
+            
+            data = df_filtered.groupby(c1_group)[c1_val].sum().reset_index()
+            if c1_type == "Donut": fig1 = px.pie(data, values=c1_val, names=c1_group, hole=0.5, color_discrete_sequence=colors, template=plotly_template)
+            elif c1_type == "Pie": fig1 = px.pie(data, values=c1_val, names=c1_group, color_discrete_sequence=colors, template=plotly_template)
+            elif c1_type == "Sunburst": fig1 = px.sunburst(df_filtered, path=cat_cols[:2] if len(cat_cols) > 1 else [c1_group], values=c1_val, color=c1_val, template=plotly_template)
+            else: fig1 = px.treemap(df_filtered, path=[c1_group], values=c1_val, color=c1_val, template=plotly_template)
+            
+            fig1.update_layout(paper_bgcolor=bg_color, plot_bgcolor=bg_color, height=350, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig1, use_container_width=True)
 
-    if best_cat_col and num_cols:
-        with col1:
-            st.markdown(f"**{num_cols[0]} by {best_cat_col}**")
-            fig_bar = px.bar(df, x=best_cat_col, y=num_cols[0], template="plotly_dark")
-            st.plotly_chart(fig_bar, use_container_width=True)
-        with col2:
-            st.markdown(f"**Distribution of {num_cols[0]}**")
-            fig_pie = px.pie(df, names=best_cat_col, values=num_cols[0], template="plotly_dark")
-            st.plotly_chart(fig_pie, use_container_width=True)
-    elif not best_cat_col:
-        st.info("No suitable categorical column found (needs 2-20 unique values) for Bar/Pie charts.")
+    # Chart 2: Time Trend
+    with r1_c2:
+        st.markdown("**2. Performance Over Time**")
+        if date_cols and num_cols:
+            with st.expander("⚙️ Edit Chart"):
+                c2_type = st.selectbox("Type", ["Area Trend", "Line Trend", "Bar Trend"], key="c2_t")
+                c2_val = st.selectbox("Metric", num_cols, index=0, key="c2_v")
+            
+            trend_data = df_filtered.groupby(date_cols[0])[c2_val].sum().reset_index()
+            if c2_type == "Area Trend": fig2 = px.area(trend_data, x=date_cols[0], y=c2_val, color_discrete_sequence=colors, template=plotly_template)
+            elif c2_type == "Line Trend": fig2 = px.line(trend_data, x=date_cols[0], y=c2_val, markers=True, color_discrete_sequence=colors, template=plotly_template)
+            else: fig2 = px.bar(trend_data, x=date_cols[0], y=c2_val, color_discrete_sequence=colors, template=plotly_template)
+            
+            fig2.update_layout(paper_bgcolor=bg_color, plot_bgcolor=bg_color, height=350, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig2, use_container_width=True)
+        else: st.info("No Date Column Found")
 
-    if date_cols and num_cols:
-        st.markdown(f"**{num_cols[0]} Over Time**")
-        df_grouped = df.groupby(date_cols[0])[num_cols[0]].sum().reset_index()
-        fig_line = px.line(df_grouped, x=date_cols[0], y=num_cols[0], markers=True, template="plotly_dark")
-        st.plotly_chart(fig_line, use_container_width=True)
+    # Chart 3: Correlation
+    with r2_c1:
+        st.markdown("**3. Correlation Analysis**")
+        if len(num_cols) >= 3:
+            with st.expander("⚙️ Edit Chart"):
+                c3_type = st.selectbox("Type", ["3D Scatter", "2D Scatter", "Bubble"], key="c3_t")
+                x_val = st.selectbox("X Axis", num_cols, index=0, key="c3_x")
+                y_val = st.selectbox("Y Axis", num_cols, index=1, key="c3_y")
+                z_val = st.selectbox("Z / Size", num_cols, index=2, key="c3_z")
+            
+            if c3_type == "3D Scatter": fig3 = px.scatter_3d(df_filtered, x=x_val, y=y_val, z=z_val, color=cat_cols[0] if cat_cols else None, color_discrete_sequence=colors, template=plotly_template)
+            elif c3_type == "2D Scatter": fig3 = px.scatter(df_filtered, x=x_val, y=y_val, color=cat_cols[0] if cat_cols else None, color_discrete_sequence=colors, template=plotly_template)
+            else: fig3 = px.scatter(df_filtered, x=x_val, y=y_val, size=z_val, color=cat_cols[0] if cat_cols else None, color_discrete_sequence=colors, template=plotly_template)
+            
+            fig3.update_layout(paper_bgcolor=bg_color, plot_bgcolor=bg_color, height=350, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig3, use_container_width=True)
+        else: st.info("Need at least 3 numeric columns")
 
-    if len(num_cols) >= 2:
-        st.markdown(f"**Correlation: {num_cols[0]} vs {num_cols[1]}**")
-        fig_scat = px.scatter(df, x=num_cols[0], y=num_cols[1], template="plotly_dark")
-        st.plotly_chart(fig_scat, use_container_width=True)
+    # Chart 4: Distribution
+    with r2_c2:
+        st.markdown("**4. Distribution Analysis**")
+        if num_cols:
+            with st.expander("⚙️ Edit Chart"):
+                c4_type = st.selectbox("Type", ["Funnel", "Histogram", "Box Plot"], key="c4_t")
+                c4_val = st.selectbox("Metric", num_cols, index=0, key="c4_v")
+                c4_group = st.selectbox("Group", cat_cols, index=0, key="c4_g") if cat_cols else None
+            
+            if c4_type == "Funnel" and c4_group:
+                funnel_data = df_filtered.groupby(c4_group)[c4_val].sum().reset_index().sort_values(c4_val, ascending=False)
+                fig4 = px.funnel(funnel_data, x=c4_val, y=c4_group, color_discrete_sequence=colors, template=plotly_template)
+            elif c4_type == "Histogram": fig4 = px.histogram(df_filtered, x=c4_val, color=c4_group, color_discrete_sequence=colors, template=plotly_template)
+            else: fig4 = px.box(df_filtered, x=c4_group, y=c4_val, color=c4_group, color_discrete_sequence=colors, template=plotly_template)
+            
+            fig4.update_layout(paper_bgcolor=bg_color, plot_bgcolor=bg_color, height=350, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig4, use_container_width=True)
 
+    # AI Summary
     st.divider()
-
     st.subheader("🤖 AI Executive Summary")
-    if st.button("✨ Generate Insights"):
-        if not GEMINI_CONFIGURED:
-            st.error("Gemini AI is not configured.")
-        else:
-            with st.spinner("Analyzing data structure and statistics..."):
-                try:
-                    buffer = StringIO()
-                    df.info(buf=buffer)
-                    df_info = buffer.getvalue()
-                    df_desc = df.describe().to_string()
-                    prompt = f"""You are a senior data analyst. Provide 3-5 high-level bullet points on this data:
-                    Data Info: {df_info}
-                    Data Statistics: {df_desc}"""
-                    response = model.generate_content(prompt)
-                    st.markdown(response.text)
-                except Exception as e:
-                    st.error(f"AI Analysis Failed: {e}")
+    if 'ai_summary' in st.session_state and st.session_state.get('ai_summary_file') == st.session_state.get('file_name'):
+        st.markdown(st.session_state['ai_summary'])
+        if st.button("🔄 Regenerate"):
+             del st.session_state['ai_summary']
+             st.rerun()
+    else:
+        if st.button("✨ Generate Insights"):
+            if not GEMINI_CONFIGURED:
+                st.error("Gemini AI is not configured.")
+            else:
+                with st.spinner("Analyzing..."):
+                    try:
+                        buffer = StringIO()
+                        df.info(buf=buffer)
+                        prompt = f"Analyze this data stats: {df.describe().to_string()}\nInfo: {buffer.getvalue()}\nProvide 3 key business insights."
+                        response = model.generate_content(prompt)
+                        st.session_state['ai_summary'] = response.text
+                        st.session_state['ai_summary_file'] = st.session_state.get('file_name')
+                        st.rerun()
+                    except Exception as e: st.error(f"Error: {e}")
 
 # --- UI FUNCTION FOR CODE GENERATOR ---
 def page_code_generator():
@@ -362,12 +381,15 @@ def page_data_analyzer():
             st.session_state.df_processed = df.copy()
             st.session_state.file_name = uploaded_file.name
             st.session_state.history = [df.copy()]
+            keys_to_clear = ['ml_model', 'ml_score', 'cluster_df', 'ai_summary']
+            for k in keys_to_clear:
+                if k in st.session_state: del st.session_state[k]
         
         df_processed = st.session_state.df_processed
         
-        tab1, tab2, tab3, tab4 = st.tabs(["📊 Visualizer", "🛠️ Data Explorer & Cleaner", "🚀 One-Click Dashboard", "🤖 ML Studio"])
+        tab1, tab2, tab3, tab4 = st.tabs(["📊 Visualizer", "🛠️ Data Explorer & Cleaner", "🚀 One-Click Dashboard", "🤖 Pro ML Studio"])
         
-        # === TAB 1: VISUALIZER ===
+        # === TAB 1: VISUALIZER (ORIGINAL) ===
         with tab1:
             st.subheader("Interactive Visualization")
             col1, col2 = st.columns([1, 2])
@@ -419,7 +441,7 @@ def page_data_analyzer():
                 except Exception as e:
                     st.error(f"Could not generate chart: {e}")
 
-        # === TAB 2: EXPLORER & CLEANER ===
+        # === TAB 2: EXPLORER & CLEANER (ORIGINAL) ===
         with tab2:
             st.subheader("🛠️ Advanced Data Cleaning Toolkit")
             col_kpi1, col_kpi2, col_kpi3 = st.columns(3)
@@ -436,6 +458,26 @@ def page_data_analyzer():
 
             with c1:
                 st.caption("🤖 AI & Structure")
+                
+                with st.expander("🪄 Natural Language Cleaning (Experimental)"):
+                    st.warning("⚠️ This feature is experimental. Always review the changes to your data carefully.")
+                    nl_command = st.text_input("Enter a cleaning command in plain English:", placeholder="e.g., make the 'country' column lowercase")
+                    if st.button("Execute Command"):
+                        with st.spinner("🤖 Translating and executing..."):
+                            try:
+                                prompt = f"""You are a Pandas expert. A user wants to modify their DataFrame, named df_processed. Their command is: '{nl_command}'. Generate ONLY the single line of Python code to perform this and reassign it back to df_processed. Example: for 'make country uppercase', output df_processed['country'] = df_processed['country'].str.upper()."""
+                                code_response = model.generate_content(prompt)
+                                generated_code = code_response.text.strip().replace("python", "").replace("```", "")
+                                
+                                add_to_history(df_processed)
+                                local_vars = {'df_processed': st.session_state.df_processed.copy(), 'pd': pd, 'np': np}
+                                exec(generated_code, {}, local_vars)
+                                st.session_state.df_processed = local_vars['df_processed']
+                                st.success("✅ Command executed successfully.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not execute command. Error: {e}")
+
                 with st.expander("💡 AI Cleaning Suggestions"):
                     if st.button("Analyze Data Health"):
                         with st.spinner("🤖 Analyzing..."):
@@ -558,7 +600,7 @@ def page_data_analyzer():
         with tab3:
             render_ocd_dashboard(df_processed)
 
-        # === TAB 4: ML STUDIO ===
+        # === TAB 4: PRO ML STUDIO ===
         with tab4:
             render_ml_studio(df_processed)
 
