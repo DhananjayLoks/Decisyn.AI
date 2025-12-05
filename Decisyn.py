@@ -1089,35 +1089,38 @@ def page_code_generator():
                     st.code(response.text, language='python')
                 except Exception as e:
                     st.error(f"Error: {e}")
+                    
+# 🧠 UI FUNCTION: DATA GENERATOR PAGE
+def render_data_generator():
+    st.markdown("## ⚡ Instant Dataset Generator")
+    st.info("Describe the data you need, and AI will generate an Excel file for you.")
 
-                    st.markdown("### ⚡ Instant Dataset Generator")
+    # User Input
+    user_prompt = st.text_area("Describe the data:", height=100, placeholder="Ex: Create a table of 10 employees with Name, Age, Salary")
 
-# User Input
-user_prompt = st.text_area("Describe the data you need:", height=100)
-
-# The Button
-if st.button("Generate Excel File"):
-    if not user_prompt:
-        st.warning("Please type a description first.")
-    else:
-        with st.spinner("🤖 AI is generating your file..."):
-            # Because we defined the function at the TOP, this now works!
-            excel_file, status = generate_excel_from_prompt(user_prompt)
-            
-            if excel_file:
-                st.success("✅ Done!")
-                st.download_button(
-                    label="📥 Download .xlsx",
-                    data=excel_file,
-                    file_name="generated_data.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-            else:
-                st.error(status)
-
+    # The Button
+    if st.button("Generate Excel File"):
+        if not user_prompt:
+            st.warning("Please type a description first.")
+        else:
+            with st.spinner("🤖 AI is generating your file..."):
+                # Call the helper function we made earlier
+                excel_file, status = generate_excel_from_prompt(user_prompt)
+                
+                if excel_file:
+                    st.success("✅ Done!")
+                    st.download_button(
+                        label="📥 Download .xlsx",
+                        data=excel_file,
+                        file_name="generated_data.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.error(status)
 if app_mode == "AI Code Generator":
     page_code_generator()
 elif app_mode == "Excel Analyzer":
     page_data_analyzer()
+
 
 
