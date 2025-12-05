@@ -6,3 +6,4 @@ google-generativeai
 scikit-learn
 scipy
 matplotlib
+xlsxwriter
