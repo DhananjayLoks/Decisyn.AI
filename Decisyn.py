@@ -29,11 +29,13 @@ def generate_excel_from_prompt(prompt_text):
         You are a python data generator. 
         User Request: "{prompt_text}"
         
-        RULES:
-        1. Write a Python script using pandas and numpy.
-        2. Create a DataFrame containing the requested data.
-        3. YOU MUST assign the final dataframe to a variable named 'df_generated'.
-        4. Do not use print(). Do not output markdown text. Just the code.
+        CRITICAL RULES:
+        1. Write a COMPLETE, SELF-CONTAINED Python script.
+        2. You MUST explicitly import all modules you use (e.g., import pandas as pd, import numpy as np, import random, from datetime import datetime).
+        3. You MUST define every single variable you use. DO NOT assume variables like 'start_date' exist. Create them.
+        4. Create a DataFrame containing the requested data.
+        5. YOU MUST assign the final dataframe to a variable named 'df_generated'.
+        6. Do not use print(). Do not output markdown. Just the raw code.
         """
         
         # Get response
@@ -1102,3 +1104,4 @@ if app_mode == "AI Code Generator":
     page_code_generator()
 elif app_mode == "Excel Analyzer":
     page_data_analyzer()
+
