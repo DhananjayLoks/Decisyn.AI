@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import random
+import datetime
 import io
 import plotly.express as px
 import plotly.graph_objects as go
@@ -31,8 +33,8 @@ def generate_excel_from_prompt(prompt_text):
         
         CRITICAL RULES:
         1. Write a COMPLETE, SELF-CONTAINED Python script.
-        2. You MUST explicitly import all modules you use (e.g., import pandas as pd, import numpy as np, import random, from datetime import datetime).
-        3. You MUST define every single variable you use. DO NOT assume variables like 'start_date' exist. Create them.
+        2. You MUST explicitly import all modules you use (import pandas as pd, import numpy as np, import random).
+        3. You MUST define every single variable you use. DO NOT assume variables like 'start_date' exist. Define them first.
         4. Create a DataFrame containing the requested data.
         5. YOU MUST assign the final dataframe to a variable named 'df_generated'.
         6. Do not use print(). Do not output markdown. Just the raw code.
@@ -40,22 +42,34 @@ def generate_excel_from_prompt(prompt_text):
         
         # Get response
         response = model.generate_content(system_instruction)
-        logic_code = response.text 
+        logic_code = response.text
         
         # Clean code
         logic_code = logic_code.replace("```python", "").replace("```", "")
-        
-        # Execute
-        local_vars = {}
-        exec(logic_code, globals(), local_vars)
 
-        if 'df_generated' not in local_vars:
-            return None, "AI failed to generate data."
+        # 3. PRE-LOAD TOOLS (The Magic Fix)
+        # We give the AI the tools pre-loaded so it doesn't crash if it forgets imports.
+        execution_environment = {
+            "pd": pd,
+            "np": np,
+            "random": random,
+            "datetime": datetime,
+            "io": io
+        }
         
-        df = local_vars['df_generated']
+       # 4. EXECUTE SAFELY
+        # We run the code using our pre-loaded environment
+        exec(logic_code, execution_environment)
 
-        # Save to memory buffer
+        # 5. EXTRACT RESULTS
+        if 'df_generated' not in execution_environment:
+            return None, "AI generated code but failed to create variable 'df_generated'"
+        
+        df = execution_environment['df_generated']
+
+        # 6. SAVE TO EXCEL
         output = io.BytesIO()
+        # We use 'xlsxwriter' because it's stable for writing files
         with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
             df.to_excel(writer, index=False, sheet_name='Sheet1')
         output.seek(0)
@@ -63,6 +77,7 @@ def generate_excel_from_prompt(prompt_text):
         return output, "Success"
 
     except Exception as e:
+        # This will tell you EXACTLY what went wrong
         return None, f"Error: {str(e)}"
 
 # --- ML Libraries ---
@@ -1104,4 +1119,5 @@ if app_mode == "AI Code Generator":
     page_code_generator()
 elif app_mode == "Excel Analyzer":
     page_data_analyzer()
+
 
